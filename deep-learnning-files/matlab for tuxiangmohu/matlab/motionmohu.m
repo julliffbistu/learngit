@@ -1,0 +1,12 @@
+I=imread('2.jpg');
+pictureinfo=imfinfo('1','jpg');
+imshow(I);
+title('yuantu');
+LEN=100;
+THETA=30;
+PSF=fspecial('motion',LEN,THETA);
+MotionBlur=imfilter(I,PSF);
+MotionBlur= rgb2gray(MotionBlur);
+figure;
+imshow(MotionBlur);
+title('ÔË¶¯ÃþºýÍ¿');

@@ -1,0 +1,20 @@
+I=imread('mohu2.jpg');
+imshow(I);
+I=im2double(I);
+LEN=10;
+THETA=30;
+PSF=fspecial('motion',LEN,THETA);
+J=imfilter(I,PSF,'circular','conv');
+K=deconvlucy(J,PSF,5);
+M=deconvlucy(J,PSF,10);
+N=deconvlucy(J,PSF,15);
+figure;
+subplot(1,3,1);imshow(K);title('迭代5次结果');
+subplot(1,3,2);imshow(M);title('迭代10次结果');
+subplot(1,3,3);imshow(N);title('迭代15次结果');
+
+Blurred=imfilter(I,PSF,'circ','conv');
+INITPSF=ones(size(PSF));
+[J P]=deconvblind(Blurred,INITPSF,20);
+figure;
+imshow(J);

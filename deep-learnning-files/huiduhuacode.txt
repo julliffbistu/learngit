@@ -1,0 +1,39 @@
+#include"stdlib.h"         
+#include <highgui.h>    
+#include "stdio.h"      
+#include "cv.h"      
+using namespace std;    
+int main()    
+{    
+    int image_id = 1;    
+    char filename[10926];    
+    char filename2[10926];    
+     for(image_id=1;image_id<=3600;)
+	 {
+    IplImage *image=0,*imageresize=0;      
+    sprintf(filename , "%d.bmp" , image_id );    
+    IplImage* src = cvLoadImage(filename);    
+    cout<<"\n 开始灰度化！ \n";    
+    
+    while(src)    
+    {       
+    imageresize=cvCreateImage(cvGetSize(src),IPL_DEPTH_8U,1);  //创建头并分配数据
+	cvCvtColor(src, imageresize, CV_RGB2GRAY);
+	sprintf(filename2 , "C:\\Users\\lenovo\\Desktop\\neg\\%d.bmp" , image_id );    
+   cvSaveImage(filename2, imageresize);  //将处理后的图像保存放入另一个文件夹  
+     
+   cvReleaseImage(&imageresize);      
+   cvReleaseImage(&src);  //释放内存  
+   image_id++;  //图片序号递增  
+   sprintf(filename , "C:\\Users\\lenovo\\Desktop\\neg\\%d.bmp" , image_id );    
+   //src= cvLoadImage(filename); //加载下一幅图像   
+   }    
+	 }  
+   cout<<"\n 灰度化完毕！ \n";    
+   system("PAUSE");  
+	
+return(0);
+}
+
+
+

@@ -1,0 +1,117 @@
+#include <opencv2\opencv.hpp>
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+#include <io.h>
+
+using namespace std;
+using namespace cv;
+
+//获取目录下所有文件
+void getFiles(string path, vector<string>& files)
+{
+	//文件句柄
+	long   hFile = 0;
+	//文件信息
+	struct _finddata_t fileinfo;
+	string p;
+	if ((hFile = _findfirst(p.assign(path).append("\\*").c_str(), &fileinfo)) != -1)
+	{
+		do
+		{
+			//如果是目录,迭代之
+			//如果不是,加入列表
+			if ((fileinfo.attrib &  _A_SUBDIR))
+			{
+				if (strcmp(fileinfo.name, ".") != 0 && strcmp(fileinfo.name, "..") != 0)
+					getFiles(p.assign(path).append("\\").append(fileinfo.name), files);
+			}
+			else
+			{
+				files.push_back(p.assign(path).append("\\").append(fileinfo.name));
+			}
+		} while (_findnext(hFile, &fileinfo) == 0);
+		_findclose(hFile);
+	}
+}
+
+int main(){
+	/*参数定义部分*/
+	vector<vector<float>> HogFearture;
+	//Hog参数定义
+	HOGDescriptor *hog = new HOGDescriptor(           
+		cvSize(63, 63),               //winSize
+		cvSize(18, 18),               //blockSize
+		cvSize(9, 9),                 //blockStride
+		cvSize(9, 9),                 //cellSize
+		9);                           //nbins
+
+	/*数据加载部分*/
+	//获取该正样本的所有文件??
+	vector<string> PosFiles;
+	getFiles("PosDatabase/han_outdoor_pos_driver", PosFiles);
+	for (int k = 0; k < PosFiles.size(); k++)
+	{
+		//读取图片
+		cv::Mat ImgOrign = imread(PosFiles[k]);
+		CvMat ImgData(ImgOrign);
+		//imshow("Orign", ImgOrign);
+		
+		//Hog计算和显示
+		vector<float> Temp;
+		hog->compute(&ImgData, Temp, cvSize(9, 9), cvSize(0, 0));
+		
+		cout << "第" << k << "张图,特征数" << Temp.size() << endl;
+
+		HogFearture.push_back(Temp);
+	}
+	//获取该负样本的所有文件??
+	vector<string> NegFiles;
+	getFiles("NegDatabase/han_outdoor_neg_driver", NegFiles);
+	for (int k = 0; k < NegFiles.size(); k++)
+	{
+		//读取图片
+		cv::Mat ImgOrign = imread(NegFiles[k]);
+		imshow("Orign", ImgOrign);
+		waitKey(30);
+
+		//Hog计算和显示
+		vector<float> Temp;
+		hog->compute(ImgOrign, Temp, Size(9, 9), Size(0, 0));
+		cout << "第" << k << "张图,特征数" << Temp.size() << endl;
+
+		HogFearture.push_back(Temp);
+	}
+	//数据整理
+	float labels[10000] = { 1 };
+	int ImgNum = HogFearture[0].size();
+	CvMat labelsMat = cvMat(ImgNum, 1, CV_32FC1, labels);
+	cv::Mat DataTmp(HogFearture.size(), HogFearture[0].size(), CV_32FC1);
+	for (unsigned int n = 0; n < HogFearture.size(); n++)
+	{
+		cv::Mat r = DataTmp.row(n).reshape(1, HogFearture[0].size());
+		cv::Mat RowTmp = cv::Mat(HogFearture[n]);
+		RowTmp.copyTo(r);
+	}
+	CvMat trainData(DataTmp);
+
+	/*训练部分*/
+
+	//参数设定
+	CvBoostParams params;
+	params.boost_type = CvBoost::GENTLE;
+	params.weight_trim_rate = 1.0;
+	params.cv_folds = 1;
+	//params.weak_count = weak_count;
+	params.max_depth = 3;
+	params.max_categories = 2;
+	params.use_surrogates = false;
+	//训练
+	CvBoost Boost;
+	double Train_start_time = clock();
+	Boost.train(&trainData, CV_ROW_SAMPLE, &labelsMat, Mat(), Mat(), Mat(), Mat(), params, true);
+	double Train_stop_time = clock();
+	double duration = (Train_stop_time - Train_start_time) / CLOCKS_PER_SEC;
+
+	return 0;
+}
