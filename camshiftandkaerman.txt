@@ -1,0 +1,405 @@
+//对运动物体的跟踪：  
+//如果背景固定,可用帧差法 然后在计算下连通域 将面积小的去掉即可  
+//如果背景单一,即你要跟踪的物体颜色和背景色有较大区别 可用基于颜色的跟踪 如CAMSHIFT 鲁棒性都是较好的  
+//如果背景复杂,如背景中有和前景一样的颜色 就需要用到一些具有预测性的算法 如卡尔曼滤波等 可以和CAMSHIFT结合   
+  
+#ifdef _CH_  
+#pragma package <opencv>  
+#endif  
+  
+#ifndef _EiC  
+#include "cv.h"  
+#include "highgui.h"  
+#include <stdio.h>  
+#include <ctype.h> 
+#include <opencv2/video/tracking.hpp>  
+#include <opencv2/core/core.hpp> 
+#include <opencv2/opencv.hpp>  
+#include"opencv2/opencv.hpp"
+#include "opencv2/imgproc/imgproc.hpp"
+#endif  
+  using namespace std;
+  using namespace cv;
+//--------------------------------------------kaerman----------------------
+  const int winHeight=480;  
+const int winWidth=640;  
+
+Point mousePosition= Point(winWidth>>1,winHeight>>1); 
+
+/*void mouseEvent(int event, int x, int y, int flags, void *param )  
+{  
+    if (x>>1,y>>1) 
+	{  
+        mousePosition = Point(x,y);  
+    }  
+} 
+*/
+//--------------------------------------------------------------------------
+
+
+RNG rng;
+
+IplImage *image = 0, *hsv = 0, *hue = 0, *mask = 0, *backproject = 0, *histimg = 0;  
+//用HSV中的Hue分量进行跟踪  
+CvHistogram *hist = 0; 
+//Point track_box;
+//直方图类  
+int backproject_mode = 0;  
+int select_object = 0;  
+int track_object = 0;  
+int show_hist = 1;  
+CvPoint origin;  
+CvRect selection;
+CvRect track_window;  
+CvBox2D track_box;    //traking 返回的区域Box，带角度
+//Meanshift跟踪算法返回的Box类  
+//typedef struct CvBox2D{  
+//CvPoint2D32f center; /* 盒子的中心 */  
+//CvSize2D32f size; /* 盒子的长和宽 */  
+//float angle; /* 水平轴与第一个边的夹角，用弧度表示*/  
+//}CvBox2D;  
+CvConnectedComp track_comp;  
+//连接部件   
+//typedef struct CvConnectedComp{  
+//double area; /* 连通域的面积 */  
+//float value; /* 分割域的灰度缩放值 */  
+//CvRect rect; /* 分割域的 ROI */  
+//} CvConnectedComp;  
+int hdims = 40;         //划分HIST的个数，越高越精确//划分直方图bins的个数，越多越精确
+//划分直方图bins的个数，越多越精确  
+float hranges_arr[] = {0,180};   //像素值的范围   
+float* hranges = hranges_arr;  //用于初始化CvHistogram类  
+int vmin = 10, vmax = 256, smin = 30;  //用于设置滑动条  
+  
+void on_mouse( int event, int x, int y, int flags, void* param )  
+//鼠标回调函数,该函数用鼠标进行跟踪目标的选择  
+{  
+    if( !image )  
+        return;  
+  
+    if( image->origin )  
+        y = image->height - y;   //如果图像原点坐标在左下,则将其改为左上  
+      
+    if( select_object )  
+    //select_object为1,表示在用鼠标进行目标选择  
+    //此时对矩形类selection用当前的鼠标位置进行设置  
+    {  
+        selection.x = MIN(x,origin.x);  
+        selection.y = MIN(y,origin.y);  
+        selection.width = selection.x + CV_IABS(x - origin.x);  
+        selection.height = selection.y + CV_IABS(y - origin.y);  
+          
+        selection.x = MAX( selection.x, 0 );  
+        selection.y = MAX( selection.y, 0 );  
+        selection.width = MIN( selection.width, image->width );  
+        selection.height = MIN( selection.height, image->height );  
+        selection.width -= selection.x;  
+        selection.height -= selection.y;  
+    }  
+  
+    switch( event )  
+    {  
+    case CV_EVENT_LBUTTONDOWN:  
+        //鼠标按下,开始点击选择跟踪物体  
+        origin = cvPoint(x,y);  
+        selection = cvRect(x,y,0,0);  
+		//包含4个数据成员，x,y,width,height,通过定义矩形左上角坐标和矩形的宽和高来确定一个矩形 
+        //int x; /* 方形的左上角的x-坐标 */ 　	//int y; /* 方形的左上角的y-坐标*/ 
+        //int width; /* 宽 */    //int height; /* 高 */
+	  
+		select_object = 1;  
+        break;  
+    case CV_EVENT_LBUTTONUP:  
+        //鼠标松开,完成选择跟踪物体  
+        select_object = 0;  
+        if( selection.width > 0 && selection.height > 0 )  
+            //如果选择物体有效，则打开跟踪功能  
+            track_object = -1;  
+        break;  
+    }  
+}  
+  
+  
+CvScalar hsv2rgb( float hue )  
+//用于将Hue量转换成RGB量  
+{  
+    int rgb[3], p, sector;  
+    static const int sector_data[][3]=  
+        {{0,2,1}, {1,2,0}, {1,0,2}, {2,0,1}, {2,1,0}, {0,1,2}};  
+    hue *= 0.033333333333333333333333333333333f;  
+    sector = cvFloor(hue);   //cvFloor 返回不大于参数的最大整数值
+    p = cvRound(255*(hue - sector));   //返回和参数最接近的整数值
+    p ^= sector & 1 ? 255 : 0;  
+  
+    rgb[sector_data[sector][0]] = 255;  
+    rgb[sector_data[sector][1]] = 0;  
+    rgb[sector_data[sector][2]] = p;  
+  
+    return cvScalar(rgb[2], rgb[1], rgb[0],0);  
+}  
+  
+int main( int argc, char** argv )  
+{  
+    CvCapture* capture = (0);  
+      
+    if( argc == 1 || (argc == 2 && strlen(argv[1]) == 1 && isdigit(argv[1][0])))  
+        //打开摄像头  
+        capture = cvCaptureFromCAM( argc == 2 ? argv[1][0] - '0' : 0 );  
+	//cvCaptureFromCAM（index）是初始化从摄像头中获取视频，要使用的摄像头索引。如果只有一个摄像头或者用哪个摄像头也无所谓，那使用参数-1应该便可以。
+    else if( argc == 2 )  
+        //打开avi  
+        capture = cvCaptureFromAVI( argv[1] );   
+  
+    if( !capture )  
+    //打开视频流失败  
+    {  
+        fprintf(stderr,"Could not initialize capturing...\n");  
+        return -1;  
+    }  
+  
+    printf( "Hot keys: \n"  
+        "\tESC - quit the program\n"  
+        "\tc - stop the tracking\n"  
+        "\tb - switch to/from backprojection view\n"  
+        "\th - show/hide object histogram\n"  
+        "To initialize tracking, select the object with mouse\n" );  
+    //打印程序功能列表  
+   //----------------------------------------------------------------------------kaerman  
+	const int stateNum=4;                                      //状态值4×1向量(x,y,△x,△y)  
+        const int measureNum=2;                                    //测量值2×1向量(x,y)    
+    KalmanFilter KF(stateNum, measureNum, 0); 
+	 
+	KF.transitionMatrix = *(Mat_<float>(4, 4) <<1,0,1,0,0,1,0,1,0,0,1,0,0,0,0,1);  //转移矩阵A  
+    setIdentity(KF.measurementMatrix);                                             //测量矩阵H  
+    setIdentity(KF.processNoiseCov, Scalar::all(1e-5));                            //系统噪声方差矩阵Q  
+    setIdentity(KF.measurementNoiseCov, Scalar::all(1e-1));                        //测量噪声方差矩阵R  
+    setIdentity(KF.errorCovPost, Scalar::all(1));                                  //后验错误估计协方差矩阵P  
+    rng.fill(KF.statePost,RNG::UNIFORM,0,winHeight>winWidth?winWidth:winHeight);   //初始状态值x(0)  
+    Mat measurement = Mat::zeros(measureNum, 1, CV_32F);                           //初始测量值x'(0)，因为后面要更新这个值，所以必须先定义  
+	//Cv_namedWindow("kalman",mouseEvent);
+
+	Mat imageone(winHeight,winWidth,CV_8UC3,Scalar(0));  
+	//--------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+    cvNamedWindow( "Histogram", 1 );    //创建了一个名为video的窗口
+    //用于显示直方图  
+    cvNamedWindow( "CamShiftDemo", 1 );   //创建另一个名为video的窗口
+    //用于显示视频  
+	//---------------------------------------------------------------------------------------------------------
+    cvSetMouseCallback( "CamShiftDemo", on_mouse, 0 );  //设置鼠标回调函数
+	//void cvSetMouseCallback( const char* window_name, CvMouseCallback on_mouse, void* param=NULL );
+    //window_name 回调函数需要注册到的 窗口名字，即产生事件的窗口。
+    //on_mouse 指定窗口里每次鼠标事件发生的时候，被调用的函数指针，回调函数。
+    //第三个参数用来传递额外的信息给前面提到的void* param。
+	//----------------------------------------------------------------------------------------------------------
+
+    cvCreateTrackbar( "Vmin", "CamShiftDemo", &vmin, 256, 0 );  
+    cvCreateTrackbar( "Vmax", "CamShiftDemo", &vmax, 256, 0 );  
+    cvCreateTrackbar( "Smin", "CamShiftDemo", &smin, 256, 0 );  
+    //设置滑动条  
+    /*cvCreateTrackbar( const char* trackbar_name, const char* window_name, int* value, int count, CvTrackbarCallback on_change );
+	参数：
+    trackbar_name 被创建的trackbar名字。
+    window_name 窗口名字，这个窗口将为被创建trackbar的父对象。
+    value 整数指针，它的值将反映滑块的位置。这个变量指定创建时的滑块位置。
+    count 滑块位置的最大值。最小值一直是0。
+    on_change 每次滑块位置被改变的时候，被调用函数的指针。这个函数应该被声明为void Foo(int); 如果没有回调函数，这个值可以设为NULL。*/
+
+    //----------------------------------------------------------------------------------------------------------
+    for(;;)  
+    //进入视频帧处理主循环  
+    {  
+        IplImage* frame = 0;  
+        int i, bin_w, c;  
+  
+        frame = cvQueryFrame( capture );  //cvQueryFrame从摄像头或者文件中抓取一帧，然后解压并返回这一帧
+        if( !frame )  
+            break;  
+  //--------------------------------------------------------------------------------------------------------------------
+        if( !image )  
+        //image为0,表明刚开始还未对image操作过,先建立一些缓冲区  
+        {  
+            image = cvCreateImage( cvGetSize(frame), 8, 3 );   
+		
+            image->origin = frame->origin;  
+            hsv = cvCreateImage( cvGetSize(frame), 8, 3 );  
+            hue = cvCreateImage( cvGetSize(frame), 8, 1 );  
+            mask = cvCreateImage( cvGetSize(frame), 8, 1 );  
+            //分配掩膜图像空间  
+            backproject = cvCreateImage( cvGetSize(frame), 8, 1 );  
+            //分配反向投影图空间,大小一样,单通道  
+
+            hist = cvCreateHist( 1, &hdims, CV_HIST_ARRAY, &hranges, 1 );  //作用为创建直方图，
+            //分配直方图空间  CvHistogram* cvCreateHist( int dims, int* sizes, int type, float** ranges=NULL, int uniform=1 );
+			//dims 直方图维数的数目。 sizes 直方图维数尺寸的组数。 type 直方图的表示格式: 
+			//CV_HIST_ARRAY 意味着直方图数据表示为多维密集数组 CvMatND; CV_HIST_TREE 意味着直方图数据表示为多维稀疏数组 CvSparseMat.
+            //ranges 图中方块范围的数组. 它的内容取决于参数 uniform 的值。这个范围的用处是确定何时计算直方图或决定反向映射（backprojected ），每个方块对应于输入图像的哪个/哪组值
+			//uniform 如果不为0，则ranges[i] 对于灰度图为1，彩色图为3。
+
+            histimg = cvCreateImage( cvSize(320,200), 8, 3 );  
+            //分配用于直方图显示的空间  
+            cvZero( histimg );  
+            //置背景为黑色  
+        }  
+  	//创建首地址并分配存储空间IplImage* cvCreateImage( CvSize size, int depth, int channels );
+		//    depth 无符号8位整 32位，16位   channels channels 每个元素（像素）通道数.可以是 1, 2, 3 或 4.通道是交叉存取的
+	//--------------------------------------------------------------------------------------------------------------------------
+        cvCopy( frame, image, 0 );  //cvcopy是一个函数，拷贝一个数组给另一个数组 第三个参数为：操作掩码是8比特单通道的数组，它指定了输出数组中被改变的元素
+        cvCvtColor( image, hsv, CV_BGR2HSV );  //
+        //把图像从RGB表色系转为HSV表色系  cvCvtColor(...)，是Opencv里的颜色空间转换函数，可以实现RGB颜色向HSV，HSI等颜色空间的转换，也可以转换为灰度图像。
+        //当code选用CV_BGR2HSV时，对于8位图，需要将RGB值归一化到0-1之间。这样得到HSV图中的H范围才是0-360，S和V的范围是0-1。
+		//----------------------------------------------------------------------------------------------------------------------
+
+        if( track_object )  
+        //track_object非零,表示有需要跟踪的物体  
+        {  
+            int _vmin = vmin, _vmax = vmax;  
+  
+            cvInRangeS( hsv, cvScalar(0,smin,MIN(_vmin,_vmax),0),  
+                        cvScalar(180,256,MAX(_vmin,_vmax),0), mask );  
+            //制作掩膜板，只处理像素值为H：0~180，S：smin~256，V：vmin~vmax之间的部分  
+            cvSplit( hsv, hue, 0, 0, 0 );  
+            //分离H分量  
+              
+            if( track_object < 0 )  
+            //如果需要跟踪的物体还没有进行属性提取，则进行选取框类的图像属性提取  
+            {  
+                float max_val = 0.f;  
+                cvSetImageROI( hue, selection );  
+                //设置原选择框为ROI  
+                cvSetImageROI( mask, selection );  
+                //设置掩膜板选择框为ROI  
+                cvCalcHist( &hue, hist, 0, mask );  
+                //得到选择框内且满足掩膜板内的直方图  
+                cvGetMinMaxHistValue( hist, 0, &max_val, 0, 0 );  
+                cvConvertScale( hist->bins, hist->bins, max_val ? 255. / max_val : 0., 0 );  
+                // 对直方图的数值转为0~255  
+                cvResetImageROI( hue );  
+                //去除ROI  
+                cvResetImageROI( mask );  
+                //去除ROI  
+                track_window = selection;  
+                track_object = 1;  
+                //置track_object为1,表明属性提取完成  
+                cvZero( histimg );  
+                bin_w = histimg->width / hdims;  
+                for( i = 0; i < hdims; i++ )  
+                //画直方图到图像空间  
+                {  
+                    int val = cvRound( cvGetReal1D(hist->bins,i)*histimg->height/255 );  
+                    CvScalar color = hsv2rgb(i*180.f/hdims);  
+                    cvRectangle( histimg, cvPoint(i*bin_w,histimg->height),  
+                                 cvPoint((i+1)*bin_w,histimg->height - val),  
+                                 color, -1, 8, 0 );  
+                }  
+            }  
+  
+            cvCalcBackProject( &hue, backproject, hist );  
+            //计算hue的反向投影图  
+            cvAnd( backproject, mask, backproject, 0 );  
+            //得到掩膜内的反向投影  
+            cvCamShift( backproject, track_window,  
+                        cvTermCriteria( CV_TERMCRIT_EPS | CV_TERMCRIT_ITER, 10, 1 ),  
+                        &track_comp, &track_box );  
+            //使用MeanShift算法对backproject中的内容进行搜索,返回跟踪结果  
+            track_window = track_comp.rect;  
+            //得到跟踪结果的矩形框  
+              
+            if( backproject_mode )  
+                cvCvtColor( backproject, image, CV_GRAY2BGR );  
+                  
+            if( image->origin )  
+                track_box.angle = -track_box.angle;  
+            cvEllipseBox( image, track_box, CV_RGB(255,0,0), 3, CV_AA, 0 );  
+            //画出跟踪结果的位置  
+			//Mat image;
+			cout<<"X坐标为"<<track_box.center.x<<endl;
+			cout<<"Y坐标为"<<track_box.center.y<<endl;
+			Point track = Point(track_box.center.x,track_box.center.y);
+			 cvCircle(image,Point(track_box.center.x,track_box.center.y),2,CV_RGB(0,0,255),3,8,0);
+//------------------------------------------------------------------------------------------------计算坐标
+			 double Y1=0,X1=0,H=0,Y0=0,X0=0;      H=32;
+			 X0=(H*track_box.center.x-H*320)/(track_box.center.y-240);
+			 Y0=(533*H)/(track_box.center.y-240);
+			 cout<<"X0的值为："<<X0<<endl;	cout<<"Y0的值为："<<Y0<<endl;
+       
+		
+		 Mat prediction = KF.predict();  
+        Point predict_pt = Point(prediction.at<float>(0),prediction.at<float>(1) );   //预测值(x',y')  
+		 //3.update measurement  
+        measurement.at<float>(0) = cvRound(track_box.center.x);  
+        measurement.at<float>(1) = cvRound(track_box.center.y);          
+      Point mousePosition2=Point(track_box.center.x,track_box.center.y);
+        //4.update  
+        KF.correct(measurement); 
+		imageone.setTo(Scalar(255,255,255,0));  
+        circle(imageone,predict_pt,15,Scalar(0,255,0),3);    //predicted point with green  
+        circle(imageone,mousePosition2,5,Scalar(0,0,255),3); //current position with red          
+          
+        char buf[256];  
+		sprintf_s(buf,256,"predicted position:(%d,%d)",predict_pt.x,predict_pt.y);  
+			cout<<"yugudianzuobiao="<<predict_pt.x<<endl;
+			cout<<"yuguy="<<predict_pt.y<<endl;
+       putText(imageone,buf,Point(10,30),CV_FONT_HERSHEY_SCRIPT_COMPLEX,1,Scalar(0,0,0),1,8);  
+		sprintf_s(buf,256,"current position :(%d,%d)",cvRound(track_box.center.x),cvRound(track_box.center.y));
+		//cout<<"yuguyoooooooo="<<track_box.center.x<<endl;
+        putText(imageone,buf,cvPoint(10,60),CV_FONT_HERSHEY_SCRIPT_COMPLEX,1,Scalar(0,0,0),1,8);  
+          
+        imshow("kalman", imageone);  
+		
+		}  
+          
+        if( select_object && selection.width > 0 && selection.height > 0 )  
+        //如果正处于物体选择，画出选择框  
+        {  
+            cvSetImageROI( image, selection );  
+            cvXorS( image, cvScalarAll(255), image, 0 );  
+            cvResetImageROI( image );  
+        }  
+  
+        cvShowImage( "CamShiftDemo", image );  
+        cvShowImage( "Histogram", histimg );  
+  
+        c = cvWaitKey(10);  
+        if( (char) c == 32 )  
+            break;  
+        switch( (char) c )  
+        //按键切换功能  
+        {  
+        case 'b':  
+            backproject_mode ^= 1;  
+            break;  
+        case 'c':  
+            track_object = 0;  
+            cvZero( histimg );  
+            break;  
+        case 'h':  
+            show_hist ^= 1;  
+            if( !show_hist )  
+                cvDestroyWindow( "Histogram" );  
+            else  
+                cvNamedWindow( "Histogram", 1 );  
+            break;  
+        default:  
+            ;  
+        }  
+    }  
+  
+    cvReleaseCapture( &capture );  
+    cvDestroyWindow("CamShiftDemo");  
+  
+    return 0;  
+}  
+  
+#ifdef _EiC  
+main(1,"camshiftdemo.c");  
+#endif  
+

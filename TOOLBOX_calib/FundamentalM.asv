@@ -1,0 +1,12 @@
+Al = [fc_left_1(1) 0 cc_left_1(1) 0; 0 fc_left_1(2) cc_left_1(2) 0; 0 0 1 0];
+Ml = A * [Rc_1 Tc_1; 0 0 0 1];
+Ar = [fc(1) 0 cc(1) 0; 0 fc(2) cc(2) 0; 0 0 1 0];
+Mr = A * [Rc_1 Tc_1; 0 0 0 1];
+M11=M1(:,1:3);
+m1=M1(:,4);
+M21=M2(:,1:3);
+m2=M2(:,4);
+m=m2-M21*inv(M11)*m1;
+%获取m反对称矩阵
+Antisymmetric_m=[0 -m(3) m(2);m(3) 0 -m(1);-m(2) m(1) 0];
+F=Antisymmetric_m*M21*inv(M11);
